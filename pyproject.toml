@@ -1,0 +1,26 @@
+[project]
+name = "ai-soc"
+version = "0.1.0"
+description = "AI-powered Security Operations Center - Intelligent multi-agent system for threat detection and incident response"
+authors = [{ name = "Security Team", email = "security@example.com" }]
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "crewai[tools]>=0.186.1,<1.0.0",
+    "sqlalchemy>=2.0.0",
+    "pydantic>=2.0.0",
+    "pyyaml>=6.0.0",
+    "python-dotenv>=1.0.0"
+]
+
+[project.scripts]
+ai-soc = "ai_soc.main:run"
+soc-analyze = "ai_soc.main:analyze"
+soc-scan = "ai_soc.main:scan"
+soc-monitor = "ai_soc.main:monitor"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.crewai]
+type = "crew"

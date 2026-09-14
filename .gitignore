@@ -1,0 +1,77 @@
+# Environment variables
+.env
+*.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv
+
+# IDE
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs and temporary files
+logs/
+*.log
+*.log.*
+temp/
+tmp/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+database/*.db
+
+# Test coverage
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.tox/
+
+# Security sensitive data
+secrets/
+credentials/
+*.pem
+*.key
+*.crt
+
+# Old/deprecated project files (from crew-atl)
+Users/
+knowledge/user_preference.txt
+*_test.py
+demo_*.py
+example_usage.py
+advanced_test.py
+booking_test*.py
+dialogue_analysis.md
+
+# Keep important config files
+!config/*.yaml
+!pyproject.toml
+!README.md
+!ROADMAP.md
+!ARCHITECTURE.md

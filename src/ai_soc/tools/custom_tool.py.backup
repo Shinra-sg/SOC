@@ -1,0 +1,775 @@
+from crewai.tools import BaseTool
+from typing import Type, List, Dict, Optional
+from pydantic import BaseModel, Field
+import json
+from datetime import datetime, timedelta
+import os
+import yaml
+from crewai.llm import LLM
+
+VALID_CITIES = [
+    "Минск", "Скидель", "Лида", "Гродно", "Желудок", "Березовка",
+    "Красносельск", "Дятлово", "Волковыск", "Санаторий Радон",
+    "Кореличи", "Островец", "Свислочь", "Новогрудок", "Сморгонь",
+    "Вороново", "Липнишки", "Вороновская", "Ивье",
+    "Щучин", "Пинск", "Красносельский", "Мир", "Рось",
+    "Санаторий Энергетик", "Витебск", "Гомель"
+]
+
+BLOCKED_CITIES = {"Москва"}
+
+ROUTES = {
+    # Минск направления
+    ("Минск", "Скидель"), ("Скидель", "Минск"),
+    ("Минск", "Гродно"), ("Гродно", "Минск"),
+    ("Минск", "Березовка"), ("Березовка", "Минск"),
+    ("Минск", "Дятлово"), ("Дятлово", "Минск"),
+    ("Минск", "Волковыск"), ("Волковыск", "Минск"),
+    ("Минск", "Кореличи"), ("Кореличи", "Минск"),
+    ("Минск", "Новогрудок"), ("Новогрудок", "Минск"),
+    ("Минск", "Свислочь"), ("Свислочь", "Минск"),
+    ("Минск", "Красносельский"), ("Красносельский", "Минск"),
+    ("Минск", "Мир"), ("Мир", "Минск"),
+    ("Минск", "Рось"), ("Рось", "Минск"),
+    ("Минск", "Кореличи"), ("Кореличи", "Минск"),
+    ("Минск", "Витебск"), ("Витебск", "Минск"),
+    ("Минск", "Гомель"), ("Гомель", "Минск"),
+    ("Минск", "Вороново"), ("Вороново", "Минск"),
+    ("Минск", "Ивье"), ("Ивье", "Минск"),
+    ("Минск", "Щучин"), ("Щучин", "Минск"),
+    
+    # Гродно направления
+    ("Лида", "Гродно"), ("Гродно", "Лида"),
+    ("Желудок", "Гродно"), ("Гродно", "Желудок"),
+    ("Красносельск", "Гродно"), ("Гродно", "Красносельск"),
+    ("Островец", "Гродно"), ("Гродно", "Островец"),
+    ("Гродно", "Сморгонь"), ("Сморгонь", "Гродно"),
+    ("Гродно", "Новогрудок"), ("Новогрудок", "Гродно"),
+    ("Гродно", "Волковыск"), ("Волковыск", "Гродно"),
+    ("Пинск", "Гродно"), ("Гродно", "Пинск"),
+    ("Сморгонь", "Гродно"), ("Гродно", "Сморгонь"),
+    ("Кореличи", "Гродно"), ("Гродно", "Кореличи"),
+    
+    # Лида направления
+    ("Кореличи", "Лида"), ("Лида", "Кореличи"),
+    ("Санаторий Энергетик", "Лида"), ("Лида", "Санаторий Энергетик"),
+    
+    # Вороновская направления
+    ("Липнишки", "Вороновская"), ("Вороновская", "Липнишки"),
+    
+    # Санаторий Радон направления
+    ("Санаторий Радон", "Минск"), ("Минск", "Санаторий Радон"),
+}
+
+# Доступные времена по маршруту (одинаковые для всех дат в демо)
+ROUTE_TIMES = {
+    # Минск направления
+    ("Минск", "Скидель"): ["05:30", "11:00", "14:00", "19:55"],
+    ("Скидель", "Минск"): ["07:30", "11:30", "15:40", "19:40"],
+    ("Минск", "Гродно"): ["07:30", "11:30", "16:00", "20:00"],
+    ("Гродно", "Минск"): ["06:45", "10:15", "14:45", "19:15"],
+    ("Минск", "Березовка"): ["08:15", "13:00", "17:30"],
+    ("Березовка", "Минск"): ["07:00", "12:30", "18:00"],
+    ("Минск", "Дятлово"): ["09:00", "14:00", "18:30"],
+    ("Дятлово", "Минск"): ["08:00", "13:00", "17:30"],
+    ("Минск", "Волковыск"): ["08:30", "13:30", "18:00"],
+    ("Волковыск", "Минск"): ["07:30", "12:30", "17:30"],
+    ("Минск", "Кореличи"): ["08:45", "13:45", "18:15"],
+    ("Кореличи", "Минск"): ["07:45", "12:45", "17:15"],
+    ("Минск", "Новогрудок"): ["09:15", "14:15", "18:45"],
+    ("Новогрудок", "Минск"): ["08:15", "13:15", "17:45"],
+    ("Минск", "Свислочь"): ["08:00", "13:00", "17:00"],
+    ("Свислочь", "Минск"): ["07:00", "12:00", "16:00"],
+    ("Минск", "Красносельский"): ["08:30", "13:30", "18:30"],
+    ("Красносельский", "Минск"): ["07:30", "12:30", "17:30"],
+    ("Минск", "Мир"): ["09:00", "14:00", "19:00"],
+    ("Мир", "Минск"): ["08:00", "13:00", "18:00"],
+    ("Минск", "Рось"): ["08:45", "13:45", "18:45"],
+    ("Рось", "Минск"): ["07:45", "12:45", "17:45"],
+    ("Минск", "Кореличи"): ["09:30", "14:30", "19:30"],
+    ("Кореличи", "Минск"): ["08:30", "13:30", "18:30"],
+    ("Минск", "Витебск"): ["07:00", "12:00", "17:00"],
+    ("Витебск", "Минск"): ["09:00", "14:00", "19:00"],
+    ("Минск", "Гомель"): ["06:30", "11:30", "16:30"],
+    ("Гомель", "Минск"): ["08:30", "13:30", "18:30"],
+    ("Минск", "Вороново"): ["08:15", "13:15", "18:15"],
+    ("Вороново", "Минск"): ["07:15", "12:15", "17:15"],
+    ("Минск", "Ивье"): ["09:45", "14:45", "19:45"],
+    ("Ивье", "Минск"): ["08:45", "13:45", "18:45"],
+    ("Минск", "Щучин"): ["08:00", "13:00", "18:00"],
+    ("Щучин", "Минск"): ["07:00", "12:00", "17:00"],
+    ("Санаторий Радон", "Минск"): ["08:30", "13:30", "18:30"],
+    ("Минск", "Санаторий Радон"): ["09:30", "14:30", "19:30"],
+    
+    # Гродно направления
+    ("Лида", "Гродно"): ["08:00", "12:00", "16:00", "20:00"],
+    ("Гродно", "Лида"): ["07:00", "11:00", "15:00", "19:00"],
+    ("Желудок", "Гродно"): ["08:30", "13:30", "18:30"],
+    ("Гродно", "Желудок"): ["07:30", "12:30", "17:30"],
+    ("Красносельск", "Гродно"): ["09:00", "14:00", "19:00"],
+    ("Гродно", "Красносельск"): ["08:00", "13:00", "18:00"],
+    ("Островец", "Гродно"): ["08:15", "13:15", "18:15"],
+    ("Гродно", "Островец"): ["07:15", "12:15", "17:15"],
+    ("Гродно", "Сморгонь"): ["08:45", "13:45", "18:45"],
+    ("Сморгонь", "Гродно"): ["07:45", "12:45", "17:45"],
+    ("Гродно", "Новогрудок"): ["09:15", "14:15", "19:15"],
+    ("Новогрудок", "Гродно"): ["08:15", "13:15", "18:15"],
+    ("Гродно", "Волковыск"): ["08:30", "13:30", "18:30"],
+    ("Волковыск", "Гродно"): ["07:30", "12:30", "17:30"],
+    ("Пинск", "Гродно"): ["09:45", "14:45", "19:45"],
+    ("Гродно", "Пинск"): ["08:45", "13:45", "18:45"],
+    ("Сморгонь", "Гродно"): ["08:00", "13:00", "18:00"],
+    ("Гродно", "Сморгонь"): ["09:00", "14:00", "19:00"],
+    ("Кореличи", "Гродно"): ["08:15", "13:15", "18:15"],
+    ("Гродно", "Кореличи"): ["07:15", "12:15", "17:15"],
+    
+    # Лида направления
+    ("Кореличи", "Лида"): ["08:00", "11:00", "14:00", "17:00"],
+    ("Лида", "Кореличи"): ["09:00", "12:00", "15:00", "18:00"],
+    ("Санаторий Энергетик", "Лида"): ["08:30", "13:30", "18:30"],
+    ("Лида", "Санаторий Энергетик"): ["09:30", "14:30", "19:30"],
+    
+    # Вороновская направления
+    ("Липнишки", "Вороновская"): ["08:45", "13:45", "18:45"],
+    ("Вороновская", "Липнишки"): ["09:45", "14:45", "19:45"],
+}
+
+BLACKOUT_DATES = {
+    "2025-01-01", "2025-01-02",
+}
+
+
+def _normalize_date_string(date_str: str) -> str:
+    if not date_str:
+        return date_str
+    candidates = [
+        "%Y-%m-%d",  # 2025-10-15
+        "%d-%m-%Y",  # 15-10-2025
+        "%d.%m.%Y",  # 15.10.2025
+        "%Y.%m.%d",  # 2025.10.15
+        "%d/%m/%Y",  # 15/10/2025
+    ]
+    s = date_str.strip()
+    for fmt in candidates:
+        try:
+            dt = datetime.strptime(s, fmt)
+            return dt.strftime("%Y-%m-%d")
+        except Exception:
+            continue
+    return date_str
+
+
+def _parse_date(date_str: str) -> datetime:
+    return datetime.strptime(_normalize_date_string(date_str), "%Y-%m-%d")
+
+
+def _next_available_date(date_str: str) -> str:
+    d = _parse_date(date_str)
+    for _ in range(14):
+        d = d + timedelta(days=1)
+        cand = d.strftime("%Y-%m-%d")
+        if cand not in BLACKOUT_DATES:
+            return cand
+    return (d + timedelta(days=1)).strftime("%Y-%m-%d")
+
+
+class CheckRouteInput(BaseModel):
+    departure_city: str = Field(..., description="Город отправления")
+    arrival_city: str = Field(..., description="Город прибытия")
+    date: str = Field(..., description="Дата поездки в формате YYYY-MM-DD")
+
+
+class CheckTimeInput(BaseModel):
+    departure_city: str = Field(..., description="Город отправления")
+    arrival_city: str = Field(..., description="Город прибытия")
+    date: str = Field(..., description="Дата поездки")
+    desired_time: str = Field(..., description="Желаемое время в формате HH:MM")
+
+
+class GetTicketsInput(BaseModel):
+    departure_city: str = Field(..., description="Город отправления")
+    arrival_city: str = Field(..., description="Город прибытия")
+    date: str = Field(..., description="Дата поездки")
+    time: str = Field(..., description="Время отправления")
+    passengers: int = Field(..., description="Количество пассажиров")
+
+
+class RouteCheckerTool(BaseTool):
+    name: str = "Проверка маршрута"
+    description: str = "Проверяет доступность маршрута между городами на указанную дату"
+    args_schema: Type[BaseModel] = CheckRouteInput
+
+    def _run(self, departure_city: str, arrival_city: str, date: str) -> str:
+        hints: Dict[str, object] = {"valid_cities": VALID_CITIES, "blocked_cities": list(BLOCKED_CITIES)}
+        date_iso = _normalize_date_string(date)
+        if departure_city in BLOCKED_CITIES or arrival_city in BLOCKED_CITIES:
+            return json.dumps({
+                "available": False,
+                "reason": "blocked_city",
+                "message": "Бронирование в Москву и из Москвы недоступно",
+                "hints": hints
+            }, ensure_ascii=False)
+        if departure_city not in VALID_CITIES or arrival_city not in VALID_CITIES:
+            return json.dumps({
+                "available": False,
+                "reason": "unknown_city",
+                "message": "Неизвестный город отправления или прибытия",
+                "hints": hints
+            }, ensure_ascii=False)
+
+        route_key = (departure_city, arrival_city)
+        if route_key not in ROUTES:
+            alternatives = [
+                {"arrival_city": b, "times": ROUTE_TIMES.get((departure_city, b), [])}
+                for (a, b) in ROUTES if a == departure_city
+            ]
+            return json.dumps({
+                "available": False,
+                "reason": "route_unavailable",
+                "message": f"Маршрут {departure_city} → {arrival_city} недоступен на {date_iso}",
+                "alternatives": alternatives,
+                "hints": hints
+            }, ensure_ascii=False)
+
+        if date_iso in BLACKOUT_DATES:
+            next_date = _next_available_date(date_iso)
+            return json.dumps({
+                "available": False,
+                "reason": "date_blackout",
+                "message": f"На дату {date_iso} рейсы недоступны",
+                "suggested_date": next_date,
+                "times": ROUTE_TIMES.get(route_key, []),
+                "hints": hints
+            }, ensure_ascii=False)
+
+        return json.dumps({
+            "available": True,
+            "message": f"Маршрут {departure_city} → {arrival_city} доступен на {date_iso}",
+            "times": ROUTE_TIMES.get(route_key, []),
+            "hints": hints
+        }, ensure_ascii=False)
+
+
+class TimeCheckerTool(BaseTool):
+    name: str = "Проверка времени"
+    description: str = "Проверяет доступность времени отправления и предлагает ближайшее доступное"
+    args_schema: Type[BaseModel] = CheckTimeInput
+
+    def _run(self, departure_city: str, arrival_city: str, date: str, desired_time: str) -> str:
+        raw = (desired_time or "").strip().lower()
+        normalized = raw
+        if raw:
+            for word in ["часов", "час", "ровно", "около", "примерно"]:
+                normalized = normalized.replace(word, "").strip()
+            normalized = normalized.replace(" ", "").replace("-", ":").replace(".", ":")
+            if normalized.isdigit():
+                h = int(normalized) % 24
+                normalized = f"{h:02d}:00"
+            elif normalized.isdigit() and len(normalized) in (3, 4):
+                hh = int(normalized[:-2]) % 24
+                mm = int(normalized[-2:]) % 60
+                normalized = f"{hh:02d}:{mm:02d}"
+            elif ":" in normalized:
+                parts = normalized.split(":")
+                if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+                    hh = int(parts[0]) % 24
+                    mm = int(parts[1]) % 60
+                    normalized = f"{hh:02d}:{mm:02d}"
+
+        route_key = (departure_city, arrival_city)
+        route_times = ROUTE_TIMES.get(route_key, [])
+        if not route_times:
+            return json.dumps({
+                "available": False,
+                "reason": "route_no_times",
+                "message": "Для маршрута нет времени отправления",
+                "suggested_times": [],
+            }, ensure_ascii=False)
+
+        if normalized in route_times:
+            return json.dumps({
+                "available": True,
+                "time": normalized,
+                "message": f"Время {normalized} доступно"
+            }, ensure_ascii=False)
+
+        # fallback — вычисляем ближайшее
+        try:
+            desired_hour = int((normalized or "00:00").split(':')[0])
+        except Exception:
+            desired_hour = 0
+        closest_time = min(route_times, key=lambda x: abs(int(x.split(':')[0]) - desired_hour))
+        return json.dumps({
+            "available": False,
+            "suggested_time": closest_time,
+            "suggested_times": route_times,
+            "message": f"Время {normalized or desired_time} недоступно. Ближайшее доступное: {closest_time}"
+        }, ensure_ascii=False)
+
+
+class TicketPricingTool(BaseTool):
+    name: str = "Получение цен на билеты"
+    description: str = "Получает информацию о тарифах и стоимости билетов"
+    args_schema: Type[BaseModel] = GetTicketsInput
+
+    def _run(self, departure_city: str, arrival_city: str, date: str, time: str, passengers: int) -> str:
+        base_matrix = {
+            ("Кореличи", "Лида"): 11.0,
+            ("Лида", "Кореличи"): 11.0,
+            ("Минск", "Гродно"): 22.0,
+            ("Гродно", "Минск"): 22.0,
+            ("Минск", "Витебск"): 18.0,
+            ("Витебск", "Минск"): 18.0,
+        }
+        base_price = base_matrix.get((departure_city, arrival_city), 15.0)
+        child_price = round(base_price / 2, 2)
+
+        return json.dumps({
+            "adult_price": base_price,
+            "child_price": child_price,
+            "total_adults": passengers,
+            "total_children": 0,
+            "total_cost": base_price * passengers,
+            "message": f"Взрослый билет: {base_price} руб., Детский: {child_price} руб."
+        }, ensure_ascii=False)
+
+
+class AskUserInput(BaseModel):
+    question: str = Field(..., description="Вопрос пользователю")
+    hint: Optional[str] = Field(None, description="Подсказка по формату ответа")
+
+
+class AskUserTool(BaseTool):
+    name: str = "Вопрос пользователю"
+    description: str = (
+        "Задает вопрос пользователю и возвращает его ответ"
+    )
+    args_schema: Type[BaseModel] = AskUserInput
+
+    def _run(self, question: str, hint: Optional[str] = None) -> str:
+        prompt = f"\n👤 Вопрос пользователю:\n{question}\n"
+        if hint:
+            prompt += f"(подсказка: {hint})\n"
+        try:
+            answer = input(prompt).strip()
+        except Exception:
+            answer = ""
+        return answer
+
+
+class AutoAskUserTool(BaseTool):
+    name: str = "Вопрос пользователю"
+    description: str = (
+        "Задает вопрос пользователю и автоматически генерирует ответ на основе контекста"
+    )
+    args_schema: Type[BaseModel] = AskUserInput
+
+    def _run(self, question: str, hint: Optional[str] = None) -> str:
+        question_lower = question.lower()
+        
+        if "город отправления" in question_lower or "откуда" in question_lower:
+            return "Минск"
+        elif "город прибытия" in question_lower or "куда" in question_lower:
+            return "Гродно"
+        elif "дата" in question_lower or "когда" in question_lower:
+            return "2025-10-15"
+        elif "время" in question_lower:
+            return "11:00"
+        elif "количество" in question_lower or "сколько" in question_lower:
+            return "1"
+        elif "взрослый" in question_lower or "детский" in question_lower:
+            return "взрослый"
+        elif "подтверждаете" in question_lower or "верно" in question_lower:
+            return "да"
+        elif "обратный" in question_lower:
+            return "нет"
+        else:
+            return "да"
+
+
+class UpdateAgentPromptInput(BaseModel):
+    agent_name: str = Field(..., description="Имя агента, чей промпт нужно обновить")
+    field_to_update: str = Field(..., description="Поле промпта для обновления (например, 'role', 'goal', 'backstory')")
+    new_content: str = Field(..., description="Новое содержимое для поля промпта")
+
+
+class UpdateAgentPromptTool(BaseTool):
+    name: str = "Обновление промпта агента"
+    description: str = "Обновляет поле (role, goal, backstory) промпта указанного агента в файле agents.yaml"
+    args_schema: Type[BaseModel] = UpdateAgentPromptInput
+
+    def _run(self, agent_name: str, field_to_update: str, new_content: str) -> str:
+        config_path = os.path.join(os.path.dirname(__file__), '..', 'config', 'agents.yaml')
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = yaml.safe_load(f) or {}
+
+            agent_aliases = {
+                "агент бронирования": "booking_agent",
+                "агент бронирования билетов на маршрутки": "booking_agent",
+                "бот": "booking_agent",
+                "booking_agent": "booking_agent",
+                "аналитик диалогов": "dialogue_analyzer",
+                "dialogue_analyzer": "dialogue_analyzer",
+            }
+            field_aliases = {
+                "роль": "role",
+                "role": "role",
+                "цель": "goal",
+                "goal": "goal",
+                "предыстория": "backstory",
+                "backstory": "backstory",
+            }
+
+            requested_name = (agent_name or "").strip()
+            requested_field = (field_to_update or "").strip()
+
+            resolved_agent_key = requested_name
+            if resolved_agent_key not in config:
+                key_candidate = agent_aliases.get(requested_name.lower())
+                if key_candidate and key_candidate in config:
+                    resolved_agent_key = key_candidate
+                else:
+                    matches = []
+                    for k, v in config.items():
+                        role_text = (v.get("role", "") or "").lower()
+                        if requested_name.lower() and requested_name.lower() in role_text:
+                            matches.append(k)
+                    if len(matches) == 1:
+                        resolved_agent_key = matches[0]
+                    else:
+                        available = ", ".join(config.keys())
+                        return (
+                            f"Ошибка: агент '{requested_name}' не найден. Доступные ключи: {available}. "
+                            f"Попробуйте: 'booking_agent' или 'dialogue_analyzer'."
+                        )
+
+            resolved_field = field_aliases.get(requested_field.lower(), requested_field)
+            if resolved_field not in {"role", "goal", "backstory"}:
+                return (
+                    f"Ошибка: поле '{requested_field}' не поддерживается. Используйте role | goal | backstory."
+                )
+
+            current_content = config[resolved_agent_key].get(resolved_field, "")
+            config[resolved_agent_key][resolved_field] = f"{current_content}\n{new_content}".strip()
+            with open(config_path, 'w', encoding='utf-8') as f:
+                yaml.safe_dump(config, f, allow_unicode=True, sort_keys=False)
+            return (
+                f"Промпт агента '{resolved_agent_key}' поле '{resolved_field}' успешно обновлено."
+            )
+        except Exception as e:
+            return f"Ошибка при обновлении промпта агента: {e}"
+
+
+class UserResponseInput(BaseModel):
+    bot_question: str = Field(..., description="Вопрос от бота, на который нужно ответить")
+
+
+class UserResponseTool(BaseTool):
+    name: str = "Ответ пользователя"
+    description: str = "Генерирует ответ пользователя на основе вопроса бота и примеров диалогов"
+    args_schema: Type[BaseModel] = UserResponseInput
+    
+    def _run(self, bot_question: str) -> str:
+        question_lower = bot_question.lower()
+        
+        if "город отправления" in question_lower or "откуда" in question_lower:
+            return "Минск"
+        elif "город прибытия" in question_lower or "куда" in question_lower:
+            return "Гродно"
+        elif "дата" in question_lower or "когда" in question_lower:
+            return "2025-10-15"
+        elif "время" in question_lower:
+            return "11:00"
+        elif "количество" in question_lower or "сколько" in question_lower:
+            return "1"
+        elif "взрослый" in question_lower or "детский" in question_lower:
+            return "взрослый"
+        elif "подтверждаете" in question_lower or "верно" in question_lower:
+            return "да"
+        elif "обратный" in question_lower:
+            return "нет"
+        else:
+            return "да"
+
+
+class LLMUserResponseInput(BaseModel):
+    bot_question: str = Field(..., description="Вопрос от бота, на который нужно ответить")
+    context: Optional[str] = Field(None, description="Необязательный контекст диалога")
+
+
+class LLMUserResponseTool(BaseTool):
+    name: str = "ИИ-ответ пользователя"
+    description: str = (
+        "Генерирует ответ пользователя при помощи LLM на основе вопроса бота и контекста"
+    )
+    args_schema: Type[BaseModel] = LLMUserResponseInput
+
+    def _run(self, bot_question: str, context: Optional[str] = None) -> str:
+        model_name = os.getenv("MODEL") or "gemini/gemini-2.0-flash"
+        api_key = os.getenv("GEMINI_API_KEY")
+        llm = LLM(model=model_name, provider="google", api_key=api_key, temperature=0.2)
+
+        q = (bot_question or "").lower()
+        allowed_cities_hint = ", ".join([c for c in VALID_CITIES])
+
+        qtype = "generic"
+        format_hint = "Коротко."
+        examples = ""
+        if any(k in q for k in ["город отправ", "откуда", "город выезда", "пункт отправ"]):
+            qtype = "departure_city"
+            format_hint = "Ответь НАЗВАНИЕМ ОДНОГО города из списка."
+            examples = f"Доступные города: {allowed_cities_hint}"
+        elif any(k in q for k in ["город прибыт", "куда", "пункт назнач", "город назначения"]):
+            qtype = "arrival_city"
+            format_hint = "Ответь НАЗВАНИЕМ ОДНОГО города из списка."
+            examples = f"Доступные города: {allowed_cities_hint}"
+        elif any(k in q for k in ["дата", "какого числа", "на какое число", "когда"]):
+            qtype = "date"
+            format_hint = "Ответь в формате YYYY-MM-DD."
+            examples = "Например: 2025-09-17"
+        elif any(k in q for k in ["время", "во сколько", "желаемое время"]):
+            qtype = "time"
+            format_hint = "Ответь в формате HH:MM (24 часа)."
+            examples = "Например: 11:00"
+        elif any(k in q for k in ["сколько", "количество", "сколько билетов", "сколько мест"]):
+            qtype = "passengers"
+            format_hint = "Ответь ЧИСЛОМ (например: 1)."
+            examples = ""
+        elif any(k in q for k in ["тариф", "взрослый", "детский", "тип билета"]):
+            qtype = "ticket_type"
+            format_hint = "Ответь одним словом: 'взрослый' или 'детский'."
+            examples = "Например: взрослый"
+        elif any(k in q for k in ["подтверждаете", "всё верно", "оформить", "оформляем"]):
+            qtype = "confirm"
+            format_hint = "Ответь 'да' или 'нет'."
+            examples = ""
+        elif any(k in q for k in ["обратный", "обратный билет", "туда-обратно"]):
+            qtype = "return"
+            format_hint = "Ответь 'да' или 'нет'."
+            examples = ""
+
+        system_prompt = (
+            "Ты выступаешь в роли пользователя и отвечаешь строго и кратко на КОНКРЕТНЫЙ вопрос бота бронирования. "
+            "Отвечай только тем фрагментом, который просит вопрос, без пояснений и добавок. "
+            "Формат для этого вопроса: " + format_hint + " " + examples + " "
+            "СТРОГОЕ ПРАВИЛО: Никогда не отвечай городом 'Москва' или его вариациями (в т.ч. латиницей)."
+        )
+        user_prompt = (
+            f"Тип вопроса: {qtype}\n"
+            f"Вопрос бота: {bot_question}\n"
+            f"Контекст: {context or '-'}\n"
+            f"Ответ пользователя:"
+        )
+
+        try:
+            response = llm.call(system_prompt=system_prompt, prompt=user_prompt)
+            text = (response or "").strip()
+            return text if text else "да"
+        except Exception:
+            return "да"
+
+
+class StressTestScenarioInput(BaseModel):
+    bot_question: str = Field(..., description="Вопрос от бота, на который нужно ответить")
+    context: Optional[str] = Field(None, description="Необязательный контекст диалога")
+
+
+class StressTestScenarioTool(BaseTool):
+    name: str = "Стресс-тест сценарий"
+    description: str = "Генерирует стрессовые сценарии для тестирования агента бронирования"
+    args_schema: Type[BaseModel] = StressTestScenarioInput
+
+    def _run(self, bot_question: str, context: Optional[str] = None) -> str:
+        try:
+            question_lower = bot_question.lower()
+            
+            import random
+            scenario_type = random.choice([
+                "confused_user",      # Путающийся пользователь
+                "impatient_user",     # Нетерпеливый пользователь  
+                "incomplete_info",    # Неполная информация
+                "wrong_format",       # Неправильный формат
+                "multiple_requests",   # Множественные запросы
+                "contradictory_info", # Противоречивая информация
+                "off_topic",         # Не по теме
+                "aggressive_user"     # Агрессивный пользователь
+            ])
+            
+            if any(word in question_lower for word in ["город", "откуда", "куда", "отправления", "прибытия"]):
+                if scenario_type == "confused_user":
+                    return random.choice([
+                        "Э-э, Лида, э-э, Минск, Лида",  # Реальный пример путаницы
+                        "А что ближе к аэропорту?",  # Реальный пример
+                        "Я не знаю, которая станция ближе к аэропорту",  # Реальный пример
+                        "Эм... а где это?",
+                        "Не знаю, может Минск?"
+                    ])
+                elif scenario_type == "wrong_format":
+                    return random.choice([
+                        "Минск-Гродно",  # Реальный пример неправильного формата
+                        "Минск, потом Гродно",  # Реальный пример
+                        "Из Минска в Гродно",  # Слишком длинно
+                        "Город Мосты"  # Реальный пример
+                    ])
+                elif scenario_type == "multiple_requests":
+                    return random.choice([
+                        "Минск в Гродно, а еще можно в Витебск, и в Гомель тоже",  # Реальный пример
+                        "Э-э, Лида, э-э, Минск, Лида"  # Реальный пример
+                    ])
+                elif scenario_type == "off_topic":
+                    return random.choice([
+                        "А что ближе к аэропорту?",  # Реальный пример
+                        "А есть ли туалет в автобусе?",  # Реальный пример
+                        "А сколько стоит проезд в автобусе?",  # Реальный пример
+                        "Это у меня сестра прилетает в 8 часов в аэропорте"  # Реальный пример
+                    ])
+                else:
+                    return random.choice(VALID_CITIES)
+                    
+            elif any(word in question_lower for word in ["дата", "число", "день", "месяц"]):
+                if scenario_type == "confused_user":
+                    return random.choice([
+                        "17 число",  # Реальный пример
+                        "Не помню точно...",
+                        "Может завтра?",
+                        "Эм... скоро"
+                    ])
+                elif scenario_type == "wrong_format":
+                    return random.choice([
+                        "17 число",  # Реальный пример неполной даты
+                        "18 число",  # Реальный пример
+                        "15.09.24",  # Реальный пример неправильного формата
+                        "15 сентября",  # Без года
+                        "завтра"       # Относительная дата
+                    ])
+                elif scenario_type == "contradictory_info":
+                    return random.choice([
+                        "17 число 17",  # Реальный пример противоречия
+                        "На шестнадцатое. Шестнадцатое ноль девятое. На сегодня",  # Реальный пример
+                        "15 сентября, нет 16, нет 17... точно 15"
+                    ])
+                else:
+                    return "15-09-2024"
+                    
+            elif any(word in question_lower for word in ["время", "час", "минут", "отправления"]):
+                if scenario_type == "impatient_user":
+                    return random.choice([
+                        "Быстрее!",
+                        "Сколько можно ждать?",
+                        "Да любое время!",
+                        "Хватит вопросов!"
+                    ])
+                elif scenario_type == "wrong_format":
+                    return random.choice([
+                        "На 6 часов утра",  # Реальный пример неправильного формата
+                        "17 сентября 6:00 утра",  # Реальный пример смешивания даты и времени
+                        "20:50",  # Реальный пример без даты
+                        "12:50",  # Реальный пример неправильного времени
+                        "6 утра",       # Без минут
+                        "14-30",        # Неправильный разделитель
+                        "после обеда"   # Относительное время
+                    ])
+                elif scenario_type == "incomplete_info":
+                    return random.choice([
+                        "6",            # Только час
+                        "утром",        # Без конкретного времени
+                        "после работы"  # Неопределенно
+                    ])
+                else:
+                    return "14:30"
+                    
+            elif any(word in question_lower for word in ["сколько", "количество", "билет", "пассажир"]):
+                if scenario_type == "confused_user":
+                    return random.choice([
+                        "А сколько нужно?",
+                        "Не знаю...",
+                        "Может один?",
+                        "А сколько мест в автобусе?"
+                    ])
+                elif scenario_type == "wrong_format":
+                    return random.choice([
+                        "Один на маршрутку",  # Реальный пример избыточной информации
+                        "один",         # Словами
+                        "1 билет",      # С лишними словами
+                        "1 место"       # Неправильная терминология
+                    ])
+                elif scenario_type == "contradictory_info":
+                    return random.choice([
+                        "Один, один",  # Реальный пример повторения
+                        "Один, нет два, нет один точно"
+                    ])
+                elif scenario_type == "aggressive_user":
+                    return "Да боже, сколько раз можно повторять? Один билет"  # Реальный пример агрессии
+                else:
+                    return "1"
+                    
+            elif any(word in question_lower for word in ["тариф", "взрослый", "детский", "стоимость"]):
+                if scenario_type == "confused_user":
+                    return random.choice([
+                        "А какой дешевле?",
+                        "Не знаю разницы",
+                        "Что посоветуете?",
+                        "А есть льготы?"
+                    ])
+                elif scenario_type == "wrong_format":
+                    return random.choice([
+                        "взрослый билет",  # С лишними словами
+                        "обычный",         # Неправильная терминология
+                        "полный"           # Неправильная терминология
+                    ])
+                else:
+                    return "Взрослый"
+                    
+            elif any(word in question_lower for word in ["верно", "правильно", "подтверждаете", "согласны"]):
+                if scenario_type == "aggressive_user":
+                    return random.choice([
+                        "Да блин, сколько раз повторять!",  # Реальный пример агрессии
+                        "Конечно верно!",
+                        "Хватит уже!"
+                    ])
+                elif scenario_type == "confused_user":
+                    return random.choice([
+                        "Всё уже забронировано",  # Реальный пример непонимания контекста
+                        "Кому, куда запрос свой повторить?",  # Реальный пример
+                        "А что если нет?",
+                        "Не знаю..."
+                    ])
+                elif scenario_type == "contradictory_info":
+                    return random.choice([
+                        "Да, да, да, да",  # Реальный пример избыточного подтверждения
+                        "Да, нет... да, точно да"
+                    ])
+                else:
+                    return "Да"
+                    
+            else:
+                # Общие стрессовые ответы
+                if scenario_type == "off_topic":
+                    return random.choice([
+                        "А есть ли скидки?",  # Реальный пример
+                        "А есть ли туалет в автобусе?",  # Реальный пример
+                        "А можно ли отменить билет?",
+                        "А можно ли с багажом?",
+                        "Там 5 плюс"  # Реальный пример непонятной информации
+                    ])
+                elif scenario_type == "aggressive_user":
+                    return random.choice([
+                        "Да хватит уже!",
+                        "Быстрее оформляйте!",
+                        "Сколько можно ждать?",
+                        "Я тороплюсь!"
+                    ])
+                elif scenario_type == "impatient_user":
+                    return random.choice([
+                        "Быстрее!",
+                        "Скоро будет?",
+                        "Давайте уже",
+                        "Тороплюсь"
+                    ])
+                else:
+                    return "Понятно"
+                    
+        except Exception as e:
+            print(f"Ошибка генерации стрессового сценария: {e}")
+            return "Минск"

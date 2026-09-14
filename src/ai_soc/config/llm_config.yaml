@@ -1,0 +1,7 @@
+# Конфигурация для Gemini
+llm:
+  model: "gemini-1.5-pro"
+  provider: "google"
+  api_key: "${GEMINI_API_KEY}"
+  temperature: 0.7
+  max_tokens: 2048
